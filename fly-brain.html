@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A Female Fly Brain, Deciding</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F3F5F6; --panel:#FFFFFF; --panel-2:#EAEEEF; --line:#D9E0E2;
+    --text:#16232A; --dim:#5B6B72; --accent:#C06A22; --accent-2:#1E8F82;
+    --danger:#C0432E; --glow:rgba(192,106,34,.35); --font:'IBM Plex Sans',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0D1417; --panel:#131C21; --panel-2:#1B262B; --line:#243035;
+      --text:#E9EEEF; --dim:#8CA0A7; --accent:#FFB454; --accent-2:#68D6C4; --danger:#FF7A63; --glow:rgba(255,180,84,.45);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0D1417; --panel:#131C21; --panel-2:#1B262B; --line:#243035;
+    --text:#E9EEEF; --dim:#8CA0A7; --accent:#FFB454; --accent-2:#68D6C4; --danger:#FF7A63; --glow:rgba(255,180,84,.45);
+  }
+  html{scroll-padding-top:env(safe-area-inset-top,0px);}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 20px 48px;}
+  header{margin-bottom:22px;}
+  h1{font-size:clamp(24px,4vw,32px);font-weight:700;margin:0 0 6px;letter-spacing:-.01em;}
+  header p{margin:0;color:var(--dim);font-size:14px;line-height:1.55;max-width:68ch;}
+  main.grid{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;align-items:start;}
+  @media (max-width:860px){ main.grid{grid-template-columns:1fr;} }
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;}
+  .kicker{font-size:12px;color:var(--accent);font-weight:600;min-height:16px;}
+  #brain-svg{width:100%;height:auto;display:block;margin:4px 0;}
+  .region{fill:var(--dim);stroke:var(--line);stroke-width:1;}
+  .outline{fill:var(--panel-2);stroke:var(--line);stroke-width:1.5;}
+  .neck{stroke:var(--line);stroke-width:2;fill:none;}
+  .lbl{fill:var(--dim);font-size:9.5px;font-family:var(--font);}
+  .conn{fill:none;stroke:var(--dim);stroke-width:1.4;stroke-opacity:.18;}
+  .conn.live{stroke:var(--accent);stroke-dasharray:4 6;animation:dashflow 1.4s linear infinite;}
+  @keyframes dashflow{ to{ stroke-dashoffset:-40; } }
+  .caption{min-height:44px;font-size:15px;line-height:1.5;margin:10px 2px 0;color:var(--text);}
+  .panel{display:flex;flex-direction:column;gap:14px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;}
+  .card h2{font-size:12px;color:var(--dim);margin:0 0 10px;font-weight:600;}
+  .winner{font-size:19px;font-weight:700;margin:0 0 2px;}
+  .winner-sub{font-size:12.5px;color:var(--dim);margin:0 0 12px;}
+  .sliders{display:flex;flex-direction:column;gap:12px;}
+  .slider-row label{display:flex;justify-content:space-between;font-size:13px;color:var(--text);margin-bottom:5px;}
+  .slider-row label span.v{color:var(--dim);font-variant-numeric:tabular-nums;}
+  input[type=range]{width:100%;accent-color:var(--accent);}
+  .presets{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
+  .chip{all:unset;cursor:pointer;padding:6px 10px;border-radius:999px;border:1px solid var(--line);font-size:12px;color:var(--dim);transition:border-color .2s,color .2s;}
+  .chip:hover{border-color:var(--accent);color:var(--accent);}
+  .bars{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
+  .bar-row{font-size:12.5px;}
+  .bar-row .name{display:flex;justify-content:space-between;margin-bottom:4px;color:var(--dim);}
+  .track{position:relative;height:7px;border-radius:5px;background:var(--panel-2);overflow:hidden;}
+  .fill{position:absolute;inset:0 auto 0 0;width:0%;border-radius:5px;background:var(--accent-2);}
+  .fill.win{background:var(--accent);}
+  footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.6;border-top:1px solid var(--line);padding-top:14px;}
+  footer em{color:var(--dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>A female fly brain, deciding</h1>
+    <p>A small live network, laid out on real neuroanatomy from the female <em>Drosophila melanogaster</em> connectome (FlyWire). Nothing here is scripted — move the stimuli and the network computes, on its own, every frame, which behavior wins.</p>
+  </header>
+
+  <main class="grid">
+    <section class="stage">
+      <div class="kicker" id="kicker">Resting</div>
+      <svg id="brain-svg" viewBox="0 0 640 460" xmlns="http://www.w3.org/2000/svg">
+        <ellipse class="outline" cx="320" cy="190" rx="272" ry="158"/>
+        <path class="neck" d="M320,267 L320,327"/>
+        <g id="conn-layer"></g>
+
+        <circle class="region" data-region="ol" cx="92" cy="172" r="54"/>
+        <circle class="region" data-region="ol" cx="548" cy="172" r="54"/>
+        <text class="lbl" x="92" y="102" text-anchor="middle">Optic lobe</text>
+        <text class="lbl" x="548" y="102" text-anchor="middle">Optic lobe</text>
+
+        <circle class="region" data-region="al" cx="168" cy="236" r="19"/>
+        <circle class="region" data-region="al" cx="472" cy="236" r="19"/>
+        <text class="lbl" x="168" y="272" text-anchor="middle">Antennal lobe</text>
+
+        <circle class="region" data-region="lh" cx="188" cy="150" r="17"/>
+        <circle class="region" data-region="lh" cx="452" cy="150" r="17"/>
+        <text class="lbl" x="134" y="153" text-anchor="end">Lateral horn</text>
+
+        <ellipse class="region" data-region="mb" cx="252" cy="104" rx="27" ry="19"/>
+        <ellipse class="region" data-region="mb" cx="388" cy="104" rx="27" ry="19"/>
+        <text class="lbl" x="252" y="72" text-anchor="middle">Mushroom body</text>
+
+        <circle class="region" data-region="smp" cx="277" cy="146" r="13"/>
+        <circle class="region" data-region="smp" cx="363" cy="146" r="13"/>
+
+        <circle class="region" data-region="cx" cx="320" cy="176" r="15"/>
+        <text class="lbl" x="320" y="212" text-anchor="middle">Central complex</text>
+
+        <ellipse class="region" data-region="sez" cx="320" cy="248" rx="36" ry="19"/>
+        <text class="lbl" x="364" y="253" text-anchor="start">SEZ</text>
+
+        <circle class="region" data-region="gf" cx="320" cy="286" r="8"/>
+
+        <ellipse class="region" data-region="vnc" cx="320" cy="344" rx="44" ry="17"/>
+        <text class="lbl" x="320" y="374" text-anchor="middle">to body / legs</text>
+      </svg>
+      <p class="caption" id="caption">Everything is at baseline. Try a stimulus below.</p>
+    </section>
+
+    <aside class="panel">
+      <div class="card">
+        <h2>Currently winning</h2>
+        <div class="winner" id="winner">Idle</div>
+        <div class="winner-sub" id="winnerSub">No drive has crossed threshold.</div>
+        <ul class="bars" id="decisionBars"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Stimuli — set these, the network does the rest</h2>
+        <div class="sliders" id="sliders"></div>
+        <div class="presets" id="presets"></div>
+      </div>
+
+      <div class="card">
+        <h2>Inside the brain (live)</h2>
+        <ul class="bars" id="regionBars"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <footer>
+    This is a small rate-based network, not the real connectome — <em>139,255 neurons and 54.5 million synapses</em> (FlyWire Consortium, <em>Nature</em>, 2024) can't run in a browser tab. Region layout and pathways follow real fly neuroanatomy; connection weights are illustrative, tuned so competing drives resolve the way documented circuits behave qualitatively (e.g. the Giant Fiber escape reflex overriding other behavior, or persistent threat arousal outlasting the threat itself) — not measured values from the dataset.
+  </footer>
+</div>
+
+<script>
+const REGIONS = ['ol','al','lh','mb','smp','cx','sez','gf','vnc'];
+const REGION_NAMES = {ol:'Optic lobes', al:'Antennal lobes', lh:'Lateral horn', mb:'Mushroom bodies',
+  smp:'Superior medial protocerebrum (pC1/pC2)', cx:'Central complex', sez:'Subesophageal zone',
+  gf:'Giant fiber', vnc:'Ventral nerve cord'};
+
+const SLIDERS = [
+  {id:'food', name:'Food in sight'},
+  {id:'pher', name:'Courtship pheromone'},
+  {id:'threatSudden', name:'Sudden threat (loom)'},
+  {id:'threatRepeat', name:'Repeated / ongoing threat'},
+  {id:'taste', name:'Sugar taste on legs'}
+];
+
+const DECISIONS = ['approach','feed','mate','freeze','escape','idle'];
+const DECISION_META = {
+  approach:{name:'Approaching food', phase:'Approaching',
+    caption:"Visual food cues are winning \u2014 the central complex is steering her toward it."},
+  feed:{name:'Feeding', phase:'Feeding',
+    caption:"Taste is dominating \u2014 the SEZ has triggered proboscis extension, and dopamine neurons are tagging this as rewarding."},
+  mate:{name:'Mating', phase:'Courting',
+    caption:"pC1/pC2 neurons have crossed threshold \u2014 courtship cues are winning and she's receptive."},
+  freeze:{name:'Freezing', phase:'Frozen',
+    caption:"Persistent threat arousal is winning \u2014 motor output is suppressed and she's frozen in place."},
+  escape:{name:'Escaping', phase:'Escaping',
+    caption:"The Giant Fiber circuit has fired \u2014 every other drive is being overridden for an emergency jump."},
+  idle:{name:'Idle', phase:'Resting',
+    caption:"Nothing has crossed threshold. She's just holding baseline visual and postural tone."}
+};
+
+const CONN = {
+  'ol-smp-L':[92,172,277,146,'ol','smp'], 'ol-smp-R':[548,172,363,146,'ol','smp'],
+  'al-lh-L':[168,236,188,150,'al','lh'], 'al-lh-R':[472,236,452,150,'al','lh'],
+  'lh-smp-L':[188,150,277,146,'lh','smp'], 'lh-smp-R':[452,150,363,146,'lh','smp'],
+  'smp-cx-L':[277,146,320,176,'smp','cx'], 'smp-cx-R':[363,146,320,176,'smp','cx'],
+  'sez-mb-L':[320,248,252,104,'sez','mb'], 'sez-mb-R':[320,248,388,104,'sez','mb'],
+  'sez-vnc':[320,267,320,327,'sez','vnc'],
+  'ol-gf-L':[92,172,320,286,'ol','gf'], 'ol-gf-R':[548,172,320,286,'ol','gf'],
+  'gf-vnc':[320,294,320,327,'gf','vnc'],
+  'ol-cx-L':[92,172,320,176,'ol','cx'], 'ol-cx-R':[548,172,320,176,'ol','cx']
+};
+
+// ---- network state ----
+const sliderVal = {}; SLIDERS.forEach(s=> sliderVal[s.id]=0);
+const region = {}; REGIONS.forEach(r=> region[r]=0);
+let arousal = 0;
+const decision = {}; DECISIONS.forEach(d=> decision[d]=0);
+decision.idle = 0.25;
+
+const RELAY_LEAK = 1.0, AROUSAL_LEAK = 0.15, DECISION_LEAK = 1.2;
+
+function relayInputs(){
+  return {
+    ol: sliderVal.food*0.9 + sliderVal.threatSudden*0.5 + sliderVal.threatRepeat*0.35,
+    al: sliderVal.pher*1.0,
+    sez: sliderVal.taste*1.0,
+    gf: sliderVal.threatSudden*1.0 + arousal*0.3,
+    lh: region.al*0.85,
+    smp: region.lh*0.8 + region.ol*0.7,
+    cx: region.smp*0.7 + region.ol*0.35 + arousal*0.9,
+    mb: region.sez*0.5,
+    vnc: region.sez*0.7 + region.gf*1.0 + region.cx*0.4 - decision.freeze*1.0
+  };
+}
+function decisionInputs(){
+  const raw = {
+    approach: region.cx*0.8 + region.smp*0.15,
+    feed: region.sez*0.7 + region.mb*0.2,
+    mate: region.smp*0.9,
+    freeze: arousal*0.9,
+    escape: region.gf*1.0,
+    idle: 0.3
+  };
+  const out = {};
+  DECISIONS.forEach(d=>{
+    let inhib = 0;
+    DECISIONS.forEach(o=>{
+      if(o===d) return;
+      const strength = o==='escape' ? 1.6 : (o==='idle' ? 0.3 : 1.1);
+      inhib += strength*decision[o];
+    });
+    const selfExcite = d==='idle' ? 0.2*decision[d] : 0.5*decision[d];
+    out[d] = raw[d] + selfExcite - inhib;
+  });
+  return out;
+}
+
+function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+
+let last = performance.now();
+function tick(now){
+  const dt = Math.min(0.05, (now-last)/1000); last = now;
+
+  const rIn = relayInputs();
+  REGIONS.forEach(r=>{ region[r] = clamp01(region[r] + (-RELAY_LEAK*region[r] + rIn[r])*dt); });
+  arousal = clamp01(arousal + (-AROUSAL_LEAK*arousal + sliderVal.threatRepeat*1.0)*dt);
+
+  const dIn = decisionInputs();
+  DECISIONS.forEach(d=>{ decision[d] = clamp01(decision[d] + (-DECISION_LEAK*decision[d] + dIn[d])*dt); });
+
+  render();
+  requestAnimationFrame(tick);
+}
+
+// ---- DOM wiring ----
+const regionEls = {}; REGIONS.forEach(r=> regionEls[r]=Array.from(document.querySelectorAll(`[data-region="${r}"]`)));
+const connLayer = document.getElementById('conn-layer');
+const connEls = {};
+Object.entries(CONN).forEach(([id,[x1,y1,x2,y2]])=>{
+  const p = document.createElementNS('http://www.w3.org/2000/svg','path');
+  p.setAttribute('d', `M${x1},${y1} L${x2},${y2}`);
+  p.setAttribute('class','conn');
+  connLayer.appendChild(p);
+  connEls[id]=p;
+});
+
+const regionBarsEl = document.getElementById('regionBars');
+const regionFills = {};
+REGIONS.forEach(r=>{
+  const li = document.createElement('li'); li.className='bar-row';
+  li.innerHTML = `<div class="name"><span>${REGION_NAMES[r]}</span></div><div class="track"><div class="fill" data-r="${r}"></div></div>`;
+  regionBarsEl.appendChild(li);
+  regionFills[r] = li.querySelector('.fill');
+});
+
+const decisionBarsEl = document.getElementById('decisionBars');
+const decisionFills = {};
+DECISIONS.forEach(d=>{
+  const li = document.createElement('li'); li.className='bar-row';
+  li.innerHTML = `<div class="name"><span>${DECISION_META[d].name}</span></div><div class="track"><div class="fill" data-d="${d}"></div></div>`;
+  decisionBarsEl.appendChild(li);
+  decisionFills[d] = li.querySelector('.fill');
+});
+
+const slidersEl = document.getElementById('sliders');
+SLIDERS.forEach(s=>{
+  const row = document.createElement('div'); row.className='slider-row';
+  row.innerHTML = `<label>${s.name} <span class="v" id="v-${s.id}">0</span></label><input type="range" min="0" max="100" value="0" id="s-${s.id}">`;
+  slidersEl.appendChild(row);
+  row.querySelector('input').addEventListener('input', e=>{
+    sliderVal[s.id] = e.target.value/100;
+    document.getElementById('v-'+s.id).textContent = e.target.value;
+  });
+});
+function setSliders(vals){
+  SLIDERS.forEach(s=>{
+    const v = vals[s.id] ?? 0;
+    sliderVal[s.id] = v/100;
+    document.getElementById('s-'+s.id).value = v;
+    document.getElementById('v-'+s.id).textContent = v;
+  });
+}
+
+const PRESETS = [
+  {label:'Reset', vals:{}},
+  {label:'Food nearby', vals:{food:80}},
+  {label:'Male courting', vals:{pher:80}},
+  {label:'Sudden predator', vals:{threatSudden:90}},
+  {label:'Ongoing threat', vals:{threatRepeat:75}},
+  {label:'Food + predator', vals:{food:80, threatSudden:90}}
+];
+const presetsEl = document.getElementById('presets');
+PRESETS.forEach(p=>{
+  const b = document.createElement('button'); b.className='chip'; b.textContent = p.label;
+  b.addEventListener('click', ()=> setSliders(p.vals));
+  presetsEl.appendChild(b);
+});
+
+const kicker = document.getElementById('kicker');
+const captionEl = document.getElementById('caption');
+const winnerEl = document.getElementById('winner');
+const winnerSubEl = document.getElementById('winnerSub');
+let displayedWinner = 'idle';
+
+function render(){
+  REGIONS.forEach(r=>{
+    const v = region[r];
+    regionEls[r].forEach(el=>{
+      el.style.fillOpacity = (0.3 + 0.6*v).toFixed(2);
+      el.style.fill = v>0.28 ? 'var(--accent)' : 'var(--dim)';
+      el.style.filter = v>0.28 ? `drop-shadow(0 0 ${(v*10).toFixed(1)}px var(--glow))` : 'none';
+    });
+    regionFills[r].style.width = Math.round(v*100)+'%';
+  });
+  Object.entries(CONN).forEach(([id,[,,,,a,b]])=>{
+    const v = Math.min(region[a], region[b]);
+    const el = connEls[id];
+    el.style.strokeOpacity = (0.15 + 0.8*v).toFixed(2);
+    if(v>0.12){ el.classList.add('live'); el.style.animationDuration = (1.6 - v*1.1).toFixed(2)+'s'; }
+    else { el.classList.remove('live'); }
+  });
+
+  let best='idle', bestV=-1;
+  DECISIONS.forEach(d=>{
+    decisionFills[d].style.width = Math.round(decision[d]*100)+'%';
+    decisionFills[d].classList.remove('win');
+    if(decision[d]>bestV){ bestV=decision[d]; best=d; }
+  });
+  decisionFills[best].classList.add('win');
+
+  if(best !== displayedWinner && (decision[best] > decision[displayedWinner] + 0.04 || decision[displayedWinner] < 0.15)){
+    displayedWinner = best;
+    const meta = DECISION_META[best];
+    kicker.textContent = meta.phase;
+    captionEl.textContent = meta.caption;
+    winnerEl.textContent = meta.name;
+    winnerSubEl.textContent = best==='idle' ? 'No drive has crossed threshold.' : `Activation ${Math.round(decision[best]*100)}% \u2014 next closest is being suppressed.`;
+  } else if(best==='idle'){
+    winnerSubEl.textContent = 'No drive has crossed threshold.';
+  } else {
+    winnerSubEl.textContent = `Activation ${Math.round(decision[best]*100)}% \u2014 next closest is being suppressed.`;
+  }
+}
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
