@@ -219,7 +219,7 @@ function decisionInputs(){
     let inhib = 0;
     DECISIONS.forEach(o=>{
       if(o===d) return;
-      const strength = o==='escape' ? 1.6 : (o==='idle' ? 0.3 : 1.1);
+      const strength = o==='escape' ? 1.6 : (d==='escape' ? 0.35 : (o==='idle' ? 0.3 : 1.1));
       inhib += strength*decision[o];
     });
     const selfExcite = d==='idle' ? 0.2*decision[d] : 0.5*decision[d];
