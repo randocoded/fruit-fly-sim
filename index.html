@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>A Female Fly Brain, Deciding</title>
+<style>
+html{color-scheme:dark;background:#111}
+body{background:#111;color:#ddd;max-width:1040px;margin:0 auto;padding:0 16px 16px;line-height:1.4}
+h1{margin:10px 0 4px;font-size:1.7em}
+p{margin:6px 0}
+table{border-collapse:collapse;width:100%}
+td,th{text-align:left;padding:2px 6px 2px 0;font-weight:normal;vertical-align:middle}
+th{font-size:.85em;opacity:.7}
+td.n{text-align:right;white-space:nowrap}
+meter{width:100%}
+button{margin:6px 4px 0 0;font:inherit}
+#status,footer,.note{font-size:.85em;opacity:.8}
+.top{display:grid;grid-template-columns:1fr 300px;gap:16px;align-items:start}
+#map{width:100%;height:auto;display:block}
+#map .r{fill:#16241a;stroke:#4a5a4e;stroke-width:1}
+#map .o{fill:none;stroke:currentColor;stroke-opacity:.45;stroke-width:1.2}
+#map .h{fill:#111;stroke:#4a5a4e}
+#map text{font-size:12px;fill:currentColor}
+#map line{stroke:currentColor;stroke-opacity:.35}
+#dials{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;text-align:center;font-size:.9em}
+.dial{width:80px;height:80px;display:block;margin:0 auto;touch-action:none;cursor:pointer}
+.dial .track{fill:none;stroke:currentColor;stroke-opacity:.15;stroke-width:8}
+.dial .arc{fill:none;stroke:#4ade80;stroke-width:8}
+.dial .knob{fill:#111;stroke:currentColor;stroke-width:1.5}
+.dial text{fill:currentColor;font-size:20px}
+.dial:focus-visible{outline:2px solid currentColor}
+#sliders label{display:block;margin-top:6px}
+#sliders input{width:100%;max-width:520px;display:block}
+#behav td{width:20%;vertical-align:top;padding-right:12px}
+#behav b{font-weight:normal}
+h2.beh{margin:10px 0 4px}
+#caption{font-size:1rem;font-weight:normal;opacity:.8}
+@media (max-width:760px){.top{grid-template-columns:1fr}#dials{grid-template-columns:repeat(4,1fr)}#behav td{display:inline-block;width:45%}}
+</style>
+</head>
+<body>
+<h1>A female fly brain, deciding</h1>
+<p>A spiking simulation of a whole female <i>Drosophila</i> brain: 139,255 neurons, the same count as the FlyWire connectome, wired along known pathways. Turn the dials and the network decides what she does. Finer controls are further down.</p>
+
+<div class="top">
+<div>
+<svg id="map" viewBox="0 0 800 450" role="img" aria-label="Front view of the fly brain, shaded by live firing rate"></svg>
+<p class="note">Front view, both hemispheres. Brighter = higher firing rate. Hover a region for its rate.</p>
+</div>
+<div>
+<div id="dials"></div>
+<div id="presets"></div>
+</div>
+</div>
+
+<h2 class="beh">Behaviour: <span id="winner">Idle</span>. <span id="caption">Nothing has crossed threshold.</span></h2>
+<table><tr id="behav"></tr></table>
+
+<p id="status">Building the network</p>
+
+<h2>Detailed stimuli</h2>
+<p class="note">The dials above move these. Set them separately here, for example song without pheromone, or a repeated shadow instead of a sudden loom.</p>
+<div id="sliders"></div>
+
+<h2>Brain regions</h2>
+<table>
+<tr><th>Region</th><th class="n">Neurons</th><th class="n">Hz</th><th style="width:40%"></th></tr>
+<tbody id="regions"></tbody>
+</table>
+
+<h2>Internal state</h2>
+<table id="state"></table>
+
+<footer>
+<p>Leaky integrate and fire neurons, 1 ms steps, run in a background thread capped at about three quarters of one CPU core; it pauses when this tab is hidden. Cell counts follow FlyWire (Dorkenwald et al., <i>Nature</i> 2024); the wiring is statistical, random partners within each known pathway, not the measured 54.5 million synapses. Behaviour comes from descending and motor neurons: Giant Fiber (escape), freeze DNs, steering DNs, vpoDN (receptivity) and proboscis motor neurons (feeding). Mushroom body synapses learn from dopamine.</p>
+<p>Copyright 2026 randocoded</p>
+</footer>
+
+<script id="brain-src" type="text/plain">
+// Fruit fly brain engine. Runs inside a Web Worker.
+// 139,255 leaky integrate-and-fire neurons, sized to the FlyWire superclass counts.
+// Wiring is statistical (random partners within each known pathway), not the measured connectome.
+'use strict';
+
+// ---------- random numbers ----------
+let seed = 12345;
+function rnd(){ seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+const GT = new Float32Array(65536); // gaussian lookup table for fast noise
+for (let i = 0; i < GT.length; i += 2) {
+  const u = Math.max(rnd(), 1e-9), v = rnd(), r = Math.sqrt(-2 * Math.log(u));
+  GT[i] = r * Math.cos(2 * Math.PI * v); GT[i + 1] = r * Math.sin(2 * Math.PI * v);
+}
+
+// ---------- populations ----------
+// n: per side ([left,right]) for paired cell types, or a single number for unpaired ones.
+// mu: resting drive (mV, threshold is 20), sig: noise (mV), tau: membrane time constant (ms),
+// b: spike-frequency adaptation per spike (mV), I: inhibitory (GABA / glutamate) neuron.
+const P = [];
+const byName = {};
+function pair(name, n, region, o) {
+  const [nl, nr] = Array.isArray(n) ? n : [n, n];
+  add(name + '_L', name, 'L', nl, region, o); add(name + '_R', name, 'R', nr, region, o);
+}
+function mid(name, n, region, o) { add(name, name, null, n, region, o); }
+function add(id, base, side, n, region, o) {
+  const p = Object.assign({ id, base, side, n, region, mu: 8, sig: 6, tau: 20, b: 1.5, I: false, stim: 0, mod: 0 }, o || {});
+  P.push(p); (byName[base] = byName[base] || []).push(p);
+}
+
+// Sensory (16,903)
+pair('PR', 4800, 'Photoreceptors', { b: 0.5 });
+pair('ORN', 1250, 'Antennal lobes');
+pair('ORNp', 50, 'Antennal lobes');           // pheromone receptor neurons (e.g. Or67d)
+pair('JO', 480, 'Auditory (song)');            // Johnston's organ
+pair('GRN', 600, 'Taste and SEZ');
+pair('MECH', [1272, 1271], 'Other sensory');
+// Optic lobes (77,536)
+pair('LAM', 6000, 'Optic lobes');
+pair('MEDe', 17000, 'Optic lobes');
+pair('MEDi', 5000, 'Optic lobes', { I: true });
+pair('T45', 6400, 'Optic lobes');              // T4/T5 motion detectors
+pair('LOB', 4368, 'Optic lobes');
+// Visual projection (8,053) and centrifugal (524)
+pair('LCobj', 1000, 'Visual projection');      // small-object detectors (LC10-like)
+pair('LPLC2', 108, 'Visual projection', { b: 3 });  // looming detectors
+pair('LC4', 60, 'Visual projection', { b: 3 });
+pair('VPN', [2859, 2858], 'Visual projection');
+pair('VCN', 262, 'Visual projection', { I: true });
+// Central brain (32,388)
+pair('ALLN', 200, 'Antennal lobes', { I: true });
+pair('PN', 320, 'Antennal lobes');
+pair('PNp', 20, 'Antennal lobes');             // pheromone projection neurons (DA1-like)
+pair('LHe', 1000, 'Lateral horn');
+pair('LHi', 400, 'Lateral horn', { I: true });
+pair('KC', 2590, 'Mushroom bodies', { mu: 3, sig: 5 });   // sparse coders
+pair('APL', 1, 'Mushroom bodies', { I: true, tau: 10, b: 0 });
+pair('MBONav', 24, 'Mushroom bodies', { I: true });       // avoidance-promoting output (glutamatergic)
+pair('MBONap', 24, 'Mushroom bodies');                    // approach-promoting output (cholinergic)
+pair('PAM', 150, 'Dopamine neurons', { mu: 5 });          // reward
+pair('PPL1', 12, 'Dopamine neurons', { mu: 3 });          // punishment
+pair('AOTU', 300, 'Central complex');
+pair('CXe', 1200, 'Central complex');
+pair('CXi', 200, 'Central complex', { I: true });
+pair('pC1', 7, 'Female receptivity (pC1, pC2)', { mu: 4 });
+pair('pC2', 30, 'Female receptivity (pC1, pC2)');
+pair('vpoEN', 6, 'Female receptivity (pC1, pC2)');
+pair('AMMC', 300, 'Auditory (song)');
+pair('AROUS', 40, 'Defensive arousal', { mu: -3, b: 0.5 });
+pair('SEZt', 1500, 'Taste and SEZ');
+pair('FDG', 10, 'Taste and SEZ', { mu: 3, b: 0.5 });        // feeding command neurons
+pair('SEZi', 300, 'Taste and SEZ', { I: true });
+for (const s of ['esc', 'frz', 'feed', 'app', 'mate']) pair('PMI' + s, 40, 'Other central brain', { I: true, mu: 6, b: 0.5 });
+pair('CENe', 5890, 'Other central brain');
+pair('CENi', 1470, 'Other central brain', { I: true });
+// Descending (1,303)
+pair('GF', 1, 'Descending neurons', { mu: -12, sig: 3, tau: 10, b: 0 });   // giant fiber (needs strong input)
+pair('DNapp', 40, 'Descending neurons', { mu: 3 });
+pair('DNfrz', 20, 'Descending neurons', { mu: 2 });
+pair('vpoDN', 3, 'Descending neurons', { mu: 0 });
+pair('DNo', [588, 587], 'Descending neurons');
+// Ascending (2,362)
+pair('ANs', 100, 'Ascending (from body)', { mu: 6 });     // leg sugar-taste relay
+pair('ANo', 1081, 'Ascending (from body)');
+// Motor (106) and endocrine (80)
+pair('PERMN', 10, 'Motor + endocrine', { mu: 2 });        // proboscis extension motor neurons
+pair('MN', 43, 'Motor + endocrine');
+pair('ENDO', 40, 'Motor + endocrine');
+
+let N = 0;
+for (const p of P) { p.start = N; N += p.n; p.end = N; }
+const NP = P.length;
+const popStart = new Uint32Array(P.map(p => p.start)), popEnd = new Uint32Array(P.map(p => p.end)), popB = new Float32Array(P.map(p => p.b));
+const popOf = new Uint8Array(N);
+for (let k = 0; k < NP; k++) popOf.fill(k, P[k].start, P[k].end);
+
+// ---------- wiring ----------
+// conn(src, dst, k, g, mode): every dst neuron gets k random presynaptic partners from src.
+// g = mean drive (mV) onto a dst neuron when all of src fires at 10 Hz. mode: ipsi | contra | both.
+const TAU_E = 5, TAU_I = 10;
+const specs = [];
+function conn(src, dst, k, g, mode) {
+  for (const d of byName[dst]) {
+    let pool = byName[src];
+    if (pool.length === 2 && d.side) {
+      if (mode === 'contra') pool = pool.filter(s => s.side !== d.side);
+      else if (mode !== 'both') pool = pool.filter(s => s.side === d.side);
+    }
+    const inh = pool[0].I;
+    const w = g / (k * 10 * (inh ? TAU_I : TAU_E) / 1000);
+    specs.push({ pool, d, k, w });
+  }
+}
+// vision
+conn('PR', 'LAM', 6, 8);
+conn('LAM', 'MEDe', 10, 6); conn('MEDe', 'MEDe', 10, 3); conn('MEDi', 'MEDe', 8, 6); conn('MEDe', 'MEDi', 10, 6);
+conn('VCN', 'MEDe', 3, 1);
+conn('MEDe', 'T45', 10, 6); conn('MEDe', 'LOB', 10, 6); conn('T45', 'LOB', 6, 2);
+conn('MEDe', 'LCobj', 20, 4); conn('LOB', 'LCobj', 10, 2);
+conn('T45', 'LPLC2', 40, 3); conn('T45', 'LC4', 20, 3);
+conn('LOB', 'VPN', 15, 5); conn('MEDe', 'VPN', 10, 3);
+conn('CENe', 'VCN', 10, 5);
+// smell
+conn('ORN', 'PN', 30, 8, 'both'); conn('ORNp', 'PNp', 20, 9, 'both');
+conn('ORN', 'ALLN', 30, 6, 'both'); conn('ALLN', 'PN', 20, 5); conn('ALLN', 'PNp', 10, 3);
+conn('PN', 'KC', 6, 8); conn('VPN', 'KC', 1, 2); conn('LCobj', 'KC', 1, 3);
+conn('KC', 'APL', 2590, 12); conn('APL', 'KC', 1, 4);
+conn('PN', 'LHe', 20, 6); conn('PNp', 'LHe', 4, 1); conn('PN', 'LHi', 20, 6); conn('LHi', 'LHe', 10, 4);
+conn('LHe', 'CENe', 6, 1);
+conn('PNp', 'pC1', 15, 8, 'both');
+// mushroom body output + dopamine
+conn('KC', 'MBONav', 600, 6); conn('KC', 'MBONap', 600, 6);
+conn('SEZt', 'PAM', 20, 8, 'both'); conn('ANs', 'PAM', 10, 4, 'both');
+conn('AROUS', 'PPL1', 20, 8, 'both'); conn('LPLC2', 'PPL1', 20, 3, 'both');
+conn('MBONap', 'CXe', 6, 2); conn('MBONav', 'DNapp', 10, 5); conn('MBONap', 'DNapp', 10, 3);
+conn('MBONav', 'CENe', 4, 1); conn('MBONap', 'CENe', 4, 1);
+// steering toward objects
+conn('LCobj', 'AOTU', 30, 10); conn('AOTU', 'CXe', 10, 6, 'both');
+conn('CXe', 'CXe', 10, 3, 'both'); conn('CXe', 'CXi', 10, 6, 'both'); conn('CXi', 'CXe', 10, 5, 'both');
+conn('CXe', 'DNapp', 30, 10); conn('CXe', 'CENe', 3, 1);
+// song + female receptivity
+conn('JO', 'AMMC', 20, 8, 'both'); conn('AMMC', 'vpoEN', 20, 8); conn('AMMC', 'pC2', 10, 6);
+conn('pC2', 'pC1', 10, 5, 'both'); conn('pC1', 'pC1', 4, 2, 'both');
+conn('vpoEN', 'vpoDN', 6, 6); conn('pC1', 'vpoDN', 7, 6, 'both');
+// taste + feeding
+conn('GRN', 'SEZt', 10, 3, 'both'); conn('ANs', 'SEZt', 15, 8, 'both');
+conn('SEZt', 'FDG', 50, 10, 'both'); conn('FDG', 'FDG', 5, 3, 'both'); conn('FDG', 'PERMN', 10, 8, 'both');
+conn('SEZt', 'SEZi', 20, 5); conn('SEZi', 'SEZt', 10, 3);
+// threat
+conn('LPLC2', 'GF', 108, 8); conn('LC4', 'GF', 60, 6);
+conn('LPLC2', 'AROUS', 20, 12, 'both'); conn('LC4', 'AROUS', 10, 6, 'both');
+conn('AROUS', 'AROUS', 10, 1, 'both');
+conn('AROUS', 'DNfrz', 20, 10, 'both');
+// premotor lateral inhibition (each action's pool suppresses the others)
+conn('GF', 'PMIesc', 1, 6, 'both');
+conn('DNfrz', 'PMIfrz', 10, 8, 'both'); conn('PERMN', 'PMIfeed', 10, 6, 'both'); conn('FDG', 'PMIfeed', 10, 3, 'both');
+conn('DNapp', 'PMIapp', 10, 6, 'both'); conn('vpoDN', 'PMImate', 3, 6, 'both');
+for (const t of ['DNapp', 'DNfrz', 'vpoDN', 'FDG', 'PERMN']) conn('PMIesc', t, 10, 30, 'both');
+for (const t of ['DNapp', 'vpoDN', 'FDG', 'PERMN']) conn('PMIfrz', t, 10, 30, 'both');
+for (const t of ['DNapp', 'vpoDN']) conn('PMIfeed', t, 10, 16, 'both');
+for (const t of ['FDG', 'vpoDN']) conn('PMIapp', t, 10, 4, 'both');
+for (const t of ['DNapp', 'FDG']) conn('PMImate', t, 10, 8, 'both');
+// rest of the brain: a balanced, irregularly firing background network
+conn('CENe', 'CENe', 40, 3, 'both'); conn('CENi', 'CENe', 10, 5); conn('CENe', 'CENi', 40, 4, 'both'); conn('CENi', 'CENi', 10, 2);
+conn('VPN', 'CENe', 4, 1); conn('ANo', 'CENe', 4, 1, 'both'); conn('MECH', 'CENe', 4, 1);
+conn('CENe', 'DNo', 30, 4); conn('DNo', 'MN', 10, 4); conn('CENe', 'ENDO', 10, 4); conn('CENe', 'AOTU', 5, 1);
+conn('CENe', 'pC2', 5, 1); conn('CENe', 'SEZt', 5, 1);
+
+
+// build CSR (by presynaptic neuron)
+const t0 = Date.now();
+let M = 0; for (const s of specs) M += s.d.n * s.k;
+const preT = new Uint32Array(M), postT = new Uint32Array(M), wT = new Float32Array(M);
+{
+  let m = 0;
+  for (const s of specs) {
+    let tot = 0; for (const p of s.pool) tot += p.n;
+    for (let j = s.d.start; j < s.d.end; j++) {
+      for (let c = 0; c < s.k; c++) {
+        let r = (rnd() * tot) | 0, src = 0;
+        for (const p of s.pool) { if (r < p.n) { src = p.start + r; break; } r -= p.n; }
+        preT[m] = src; postT[m] = j; wT[m] = s.w * (0.5 + rnd()); m++;
+      }
+    }
+  }
+}
+const rowStart = new Uint32Array(N + 1);
+for (let m = 0; m < M; m++) rowStart[preT[m] + 1]++;
+for (let i = 0; i < N; i++) rowStart[i + 1] += rowStart[i];
+const tgt = new Uint32Array(M), wt = new Float32Array(M);
+{
+  const fill = rowStart.slice(0, N);
+  for (let m = 0; m < M; m++) { const q = fill[preT[m]]++; tgt[q] = postT[m]; wt[q] = wT[m]; }
+}
+// plastic synapses: Kenyon cell -> MBON, gated by dopamine
+const plastic = [];
+{
+  const av = new Set(byName.MBONav.map(p => P.indexOf(p))), ap = new Set(byName.MBONap.map(p => P.indexOf(p)));
+  for (const kcp of byName.KC) for (let i = kcp.start; i < kcp.end; i++)
+    for (let q = rowStart[i]; q < rowStart[i + 1]; q++) {
+      const tp = popOf[tgt[q]];
+      if (av.has(tp)) plastic.push(q, i, 0); else if (ap.has(tp)) plastic.push(q, i, 1);
+    }
+}
+const NPL = plastic.length / 3;
+const plQ = new Uint32Array(NPL), plPre = new Uint32Array(NPL), plKind = new Uint8Array(NPL), plW0 = new Float32Array(NPL);
+for (let i = 0; i < NPL; i++) { plQ[i] = plastic[3 * i]; plPre[i] = plastic[3 * i + 1]; plKind[i] = plastic[3 * i + 2]; plW0[i] = wt[plQ[i]]; }
+plastic.length = 0;
+const buildMs = Date.now() - t0;
+
+// ---------- state ----------
+const DT = 1; // ms
+const v = new Float32Array(N), ge = new Float32Array(N), gi = new Float32Array(N), ad = new Float32Array(N);
+const refr = new Uint8Array(N);
+const kcTrace = new Float32Array(N); // eligibility trace (only used for KCs)
+for (let i = 0; i < N; i++) v[i] = rnd() * 18;
+const spikes = new Uint32Array(N);
+const isInh = new Uint8Array(N); for (const p of P) if (p.I) isInh.fill(1, p.start, p.end);
+const isKC = new Uint8Array(N); for (const kp of byName.KC) isKC.fill(1, kp.start, kp.end);
+const popSpk = new Float64Array(NP);    // spike counts for the current report window
+const dE = Math.exp(-DT / TAU_E), dI = Math.exp(-DT / TAU_I), dA = Math.exp(-DT / 150);
+const popMu = new Float32Array(NP), popK1 = new Float32Array(NP), popSn = new Float32Array(NP);
+for (let k = 0; k < NP; k++) { popK1[k] = DT / P[k].tau; popSn[k] = P[k].sig * Math.sqrt(2 * DT / P[k].tau); }
+const ST = new Int32Array(2); // [rng seed, spike count this step]
+ST[0] = 987654321;
+let simMs = 0;
+
+// neuromodulators (volume transmission, slow)
+let TK = 0, rA = 0; // defensive-arousal neuropeptide (tachykinin-like), arousal-neuron rate
+let DApam = 0, DAppl = 0; // dopamine levels (reward, punishment)
+const stim = { food: 0, pher: 0, song: 0, sudden: 0, repeat: 0, taste: 0 };
+
+const idx = n => P.findIndex(p => p.id === n);
+function popsOf(base) { return byName[base].map(p => P.indexOf(p)); }
+const iPAM = popsOf('PAM'), iPPL = popsOf('PPL1'), iAROUS = popsOf('AROUS');
+const stepSpk = new Float64Array(NP);
+
+function drives() {
+  const s = stim;
+  // repeated threat = a shadow passing over every second (250 ms on)
+  const rep = (simMs % 1000) < 250 ? s.repeat : 0;
+  const loom = s.sudden, base = {};
+  base.PR = 6 * s.food + 6 * loom + 5 * rep;
+  base.MEDe = 3 * s.food + 4 * loom + 3 * rep;
+  base.T45 = 10 * loom + 8 * rep;
+  base.LCobj = 22 * s.food;
+  base.VPN = 3 * s.food + 3 * rep;
+  base.LPLC2 = 30 * loom + 9 * rep;
+  base.LC4 = 30 * loom + 9 * rep;
+  base.ORNp = 26 * s.pher; base.ORN = 3 * s.pher;
+  base.JO = 26 * s.song;
+  base.ANs = 30 * s.taste; base.GRN = 8 * s.taste;
+  // neuromodulator effects
+  const tk = Math.max(0, TK - 0.15);
+  base.DNfrz = 40 * tk; base.pC1 = -30 * tk; base.FDG = -6 * tk; base.vpoDN = -25 * tk; base.DNapp = -6 * tk;
+  for (let k = 0; k < NP; k++) popMu[k] = P[k].mu + (base[P[k].base] || 0);
+}
+
+// One population's membrane update. Kept as its own small function so the JIT optimises it once
+// and reuses it (a long nested loop inside step() kept getting de-optimised in Chrome).
+function integrate(V, GE, GI, AD, RF, G, SP, start, end, mu, k1, sn, b, de, di, da) {
+  let sd = ST[0], ns = ST[1];
+  const ns0 = ns;
+  for (let i = start; i < end; i++) {
+    const e = GE[i], h = GI[i];
+    GE[i] = e * de; GI[i] = h * di;
+    const a = AD[i] * da; AD[i] = a;
+    if (RF[i] !== 0) { RF[i]--; continue; }
+    sd = (Math.imul(sd, 1664525) + 1013904223) | 0;
+    const y = V[i];
+    let x = y + k1 * (mu - y + e - h - a) + sn * G[sd >>> 16];
+    if (x >= 20) { x = 0; RF[i] = 2; AD[i] = a + b; SP[ns++] = i; }
+    V[i] = x;
+  }
+  ST[0] = sd; ST[1] = ns;
+  return ns - ns0;
+}
+function step() {
+  drives();
+  ST[1] = 0;
+  for (let k = 0; k < NP; k++) {
+    const cnt = integrate(v, ge, gi, ad, refr, GT, spikes, popStart[k], popEnd[k], popMu[k], popK1[k], popSn[k], popB[k], dE, dI, dA);
+    popSpk[k] += cnt; stepSpk[k] = cnt;
+  }
+  const ns = ST[1];
+  deliver(ns);
+  neuromod();
+  simMs += DT;
+  return ns;
+}
+function deliver(ns) {
+  // deliver spikes (1 ms synaptic delay). Dale's law: each neuron is either excitatory or inhibitory.
+  const RS = rowStart, T = tgt, W = wt, GE = ge, GI = gi, SP = spikes, KC = isKC, TR = kcTrace, INH = isInh;
+  for (let s = 0; s < ns; s++) {
+    const i = SP[s], qe = RS[i + 1];
+    if (KC[i] !== 0) TR[i] += 1;
+    const G = INH[i] !== 0 ? GI : GE;
+    for (let q = RS[i]; q < qe; q++) G[T[q]] += W[q];
+  }
+}
+function neuromod() {
+  let ar = 0; for (const k of iAROUS) ar += stepSpk[k];
+  // neuropeptide is released only when arousal neurons fire well above their resting rate
+  rA += (ar * 1000 / 80 - rA) * DT / 100;
+  TK += (Math.max(0, rA - 4) * 0.035 - TK / 8) * DT / 1000; if (TK > 1) TK = 1;
+  let pam = 0, ppl = 0; for (const k of iPAM) pam += stepSpk[k]; for (const k of iPPL) ppl += stepSpk[k];
+  DApam += (pam * 1000 / 300 - DApam) * DT / 300;  // mean PAM rate (Hz), smoothed
+  DAppl += (ppl * 1000 / 24 - DAppl) * DT / 300;
+}
+
+// KC eligibility + dopamine-gated depression of KC->MBON synapses, every 10 ms
+function plasticity() {
+  for (const kp of byName.KC) for (let i = kp.start; i < kp.end; i++) kcTrace[i] *= 0.99; // ~1 s decay
+  const rew = Math.max(0, DApam - 12) * 0.00002, pun = Math.max(0, DAppl - 12) * 0.00002;
+  for (let n = 0; n < NPL; n++) {
+    const q = plQ[n], w0 = plW0[n];
+    let w = wt[q];
+    const g = plKind[n] === 0 ? rew : pun;   // reward weakens avoidance outputs, punishment weakens approach outputs
+    w -= g * kcTrace[plPre[n]] * w;
+    w += (w0 - w) * 0.00017;                 // slow recovery (~60 s)
+    if (w < 0.1 * w0) w = 0.1 * w0;
+    wt[q] = w;
+  }
+}
+
+// ---------- reporting ----------
+const regions = [];
+{
+  const map = {};
+  for (let k = 0; k < NP; k++) {
+    const r = P[k].region;
+    if (!(r in map)) { map[r] = regions.length; regions.push({ name: r, n: 0, pops: [] }); }
+    regions[map[r]].n += P[k].n; regions[map[r]].pops.push(k);
+  }
+}
+const OUT = { escape: popsOf('GF'), freeze: popsOf('DNfrz'), approach: popsOf('DNapp'), feed: popsOf('PERMN'), mate: popsOf('vpoDN') };
+const outN = {}; for (const k in OUT) outN[k] = OUT[k].reduce((a, i) => a + P[i].n, 0);
+const outRate = { escape: 0, freeze: 0, approach: 0, feed: 0, mate: 0 };
+const outSpk = { escape: 0, freeze: 0, approach: 0, feed: 0, mate: 0 };
+
+function plasticSummary() {
+  let av = 0, nav = 0, ap = 0, nap = 0;
+  for (let n = 0; n < NPL; n++) { const r = wt[plQ[n]] / plW0[n]; if (plKind[n] === 0) { av += r; nav++; } else { ap += r; nap++; } }
+  return { av: av / nav, ap: ap / nap };
+}
+
+// run `ms` of simulated time, return summary (also used by tests)
+let windowMs = 0, windowSpikes = 0;
+function run(ms) {
+  for (let t = 0; t < ms; t++) {
+    windowSpikes += step();
+    if (simMs % 10 === 0) plasticity();
+    for (const k in OUT) { let c = 0; for (const i of OUT[k]) c += stepSpk[i]; outSpk[k] += c; }
+    if (simMs % 10 === 0) {
+      for (const k in OUT) { const r = outSpk[k] * 100 / outN[k]; outRate[k] += (r - outRate[k]) * 0.08; outSpk[k] = 0; }
+    }
+  }
+  windowMs += ms;
+}
+function report() {
+  const rr = new Float32Array(regions.length);
+  regions.forEach((r, j) => { let s = 0; for (const k of r.pops) s += popSpk[k]; rr[j] = s * 1000 / (r.n * Math.max(1, windowMs)); });
+  const pr = new Float32Array(NP);
+  for (let k = 0; k < NP; k++) pr[k] = popSpk[k] * 1000 / (P[k].n * Math.max(1, windowMs));
+  const out = { t: simMs, regionRates: rr, popRates: pr, out: Object.assign({}, outRate), tk: TK, da: DApam, pun: DAppl,
+    mb: plasticSummary(), spikesPerSec: windowSpikes * 1000 / Math.max(1, windowMs) };
+  popSpk.fill(0); windowMs = 0; windowSpikes = 0;
+  return out;
+}
+function popRates() { // for testing
+  const o = {}; for (let k = 0; k < NP; k++) o[P[k].id] = popSpk[k] * 1000 / (P[k].n * Math.max(1, windowMs)); return o;
+}
+
+const info = { neurons: N, connections: M, plastic: NPL, buildMs,
+  memMB: Math.round((M * 8 + N * 34 + NPL * 13) / 1048576),
+  regions: regions.map(r => ({ name: r.name, n: r.n })), pops: P.map(p => ({ id: p.id, n: p.n })), outN };
+
+// ---------- worker loop: real time, at most ~75% of one CPU core ----------
+if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && !self.__TEST__) {
+  let paused = false, lastWall = 0, simDebt = 0, lastReport = 0, speedSim = 0, speedWall = 0;
+  self.onmessage = e => {
+    const m = e.data;
+    if (m.type === 'stim') Object.assign(stim, m.values);
+    else if (m.type === 'pause') paused = true;
+    else if (m.type === 'resume') { paused = false; lastWall = performance.now(); }
+  };
+  self.postMessage({ type: 'ready', info });
+  lastWall = lastReport = performance.now();
+  function loop() {
+    const now = performance.now();
+    if (!paused) {
+      simDebt += now - lastWall;
+      if (simDebt > 200) simDebt = 200; // never try to catch up more than 200 ms
+      const deadline = now + 30;        // work at most 30 ms of every 40 ms
+      let ran = 0;
+      while (simDebt >= 1 && performance.now() < deadline) {
+        const chunk = Math.min(5, Math.floor(simDebt)); run(chunk); simDebt -= chunk; ran += chunk;
+      }
+      speedSim += ran; speedWall += now - lastWall;
+      if (now - lastReport >= 150) {
+        const r = report(); r.speed = speedWall ? speedSim / speedWall : 1; speedSim = speedWall = 0;
+        self.postMessage({ type: 'tick', r }); lastReport = now;
+      }
+    }
+    lastWall = now;
+    setTimeout(loop, paused ? 250 : 10);
+  }
+  loop();
+}
+if (typeof module !== 'undefined') module.exports = { run, report, popRates, stim, info, P, get TK() { return TK; }, get DApam() { return DApam; }, plasticSummary };
+</script>
+<script>
+const SLIDERS = [
+  ['food', 'Food in sight'], ['pher', 'Male pheromone'], ['song', 'Male courtship song'],
+  ['sudden', 'Sudden threat (looming)'], ['repeat', 'Repeated threat (shadow every second)'], ['taste', 'Sugar taste on legs']
+];
+const DIALS = [ // id, label, the detailed stimuli it sets
+  ['food', 'Food', ['food']], ['male', 'Male courting', ['pher', 'song']],
+  ['threat', 'Predator', ['sudden']], ['sugar', 'Sugar', ['taste']]
+];
+const PRESETS = [
+  ['Reset', {}], ['Food nearby', { food: 80 }], ['Male courting', { pher: 80, song: 80 }],
+  ['Sudden predator', { sudden: 90 }], ['Ongoing threat', { repeat: 75 }], ['Food + predator', { food: 80, sudden: 90 }],
+  ['Tasting sugar', { taste: 80 }]
+];
+const BEH = {
+  approach: ['Approaching food', 'Steering DNs', 40, 'Small object detectors drive the central complex, which steers her toward the food.'],
+  feed: ['Feeding', 'Proboscis motor', 50, 'Sugar taste drives SEZ feeding neurons to extend the proboscis; reward dopamine neurons are firing.'],
+  mate: ['Accepting a mate', 'vpoDN', 80, 'Song and pheromone converge on pC1 and vpoEN; vpoDN fires and she becomes receptive.'],
+  freeze: ['Freezing', 'Freeze DNs', 40, 'Defensive arousal is high and suppressing other actions. It outlasts the threat for a while.'],
+  escape: ['Escaping', 'Giant Fiber', 150, 'Looming detectors have fired the Giant Fiber; every other action is inhibited for the jump.']
+};
+const THRESH = { approach: 10, feed: 10, mate: 10, freeze: 10, escape: 30 };
+const $ = id => document.getElementById(id);
+const stim = {};
+
+// ---- stimuli: 6 detailed values, shown as plain sliders lower down and 4 round dials up top ----
+const R = 38, C = 2 * Math.PI * R;
+const dials = {};
+function drawDial(d) {
+  const v = Math.round(d.keys.reduce((a, k) => a + stim[k], 0) / d.keys.length * 100);
+  d.v = v;
+  d.arc.setAttribute('stroke-dasharray', `${C * v / 100} ${C}`);
+  const a = 2 * Math.PI * v / 100;
+  d.knob.setAttribute('cx', 50 + R * Math.sin(a)); d.knob.setAttribute('cy', 50 - R * Math.cos(a));
+  d.text.textContent = v + '%';
+  d.svg.setAttribute('aria-valuenow', v);
+}
+function setStim(key, v) {
+  v = Math.max(0, Math.min(100, Math.round(v)));
+  stim[key] = v / 100; $('s-' + key).value = v; $('v-' + key).textContent = v + '%';
+}
+function refresh() { for (const id in dials) drawDial(dials[id]); send(); }
+for (const [id, name] of SLIDERS) {
+  stim[id] = 0;
+  $('sliders').insertAdjacentHTML('beforeend', `<label>${name}: <span id="v-${id}">0%</span><input type="range" id="s-${id}" min="0" max="100" value="0"></label>`);
+  $('s-' + id).oninput = e => { setStim(id, +e.target.value); refresh(); };
+}
+for (const [id, name, keys] of DIALS) {
+  $('dials').insertAdjacentHTML('beforeend', `<div><svg class="dial" id="d-${id}" viewBox="0 0 100 100" tabindex="0" role="slider" aria-label="${name}" aria-valuemin="0" aria-valuemax="100"><title>${name}</title><circle class="track" cx="50" cy="50" r="${R}"/><circle class="arc" cx="50" cy="50" r="${R}" transform="rotate(-90 50 50)"/><circle class="knob" r="7"/><text x="50" y="57" text-anchor="middle">0%</text></svg>${name}</div>`);
+  const svg = $('d-' + id);
+  const d = dials[id] = { svg, keys, arc: svg.querySelector('.arc'), knob: svg.querySelector('.knob'), text: svg.querySelector('text'), v: 0 };
+  const set = v => { for (const k of keys) setStim(k, v); refresh(); };
+  const fromPointer = e => {
+    const b = svg.getBoundingClientRect();
+    let a = Math.atan2(e.clientX - b.left - b.width / 2, b.top + b.height / 2 - e.clientY);
+    if (a < 0) a += 2 * Math.PI;
+    let v = a / (2 * Math.PI) * 100;
+    if (d.v > 75 && v < 25) v = 100; else if (d.v < 25 && v > 75) v = 0; // no jumping across the top
+    set(v);
+  };
+  svg.addEventListener('pointerdown', e => { svg.setPointerCapture(e.pointerId); fromPointer(e); });
+  svg.addEventListener('pointermove', e => { if (svg.hasPointerCapture(e.pointerId)) fromPointer(e); });
+  svg.addEventListener('keydown', e => {
+    const step = { ArrowUp: 5, ArrowRight: 5, ArrowDown: -5, ArrowLeft: -5, PageUp: 20, PageDown: -20 }[e.key];
+    if (step) set(d.v + step); else if (e.key === 'Home') set(0); else if (e.key === 'End') set(100); else return;
+    e.preventDefault();
+  });
+  drawDial(d);
+}
+for (const [label, vals] of PRESETS) {
+  const b = document.createElement('button'); b.textContent = label;
+  b.onclick = () => { for (const [id] of SLIDERS) setStim(id, vals[id] || 0); refresh(); };
+  $('presets').appendChild(b);
+}
+
+const bt = $('behav');
+for (const k in BEH) {
+  bt.insertAdjacentHTML('beforeend', `<td title="Output: ${BEH[k][1]}">${BEH[k][0]} <span class="note"><span id="bh-${k}">0</span> Hz</span><br><meter id="bm-${k}" min="0" max="1" value="0"></meter></td>`);
+}
+$('state').innerHTML = [
+  ['Defensive arousal (neuropeptide)', 'tk', 1], ['Reward dopamine (PAM)', 'da', 60], ['Punishment dopamine (PPL1)', 'pun', 60],
+  ['Kenyon cell to avoidance MBON synapse strength', 'av', 1], ['Kenyon cell to approach MBON synapse strength', 'ap', 1]
+].map(([n, id, max]) => `<tr><td>${n}</td><td class="n" id="st-${id}">0</td><td style="width:40%"><meter id="sm-${id}" min="0" max="${max}" value="0"></meter></td></tr>`).join('');
+
+// ---- brain map: left-hemisphere shapes, mirrored for the right ----
+const SHAPES = [
+  ['Central brain (other)', 'CENe CENi PMIesc PMIfrz PMIfeed PMIapp PMImate', '<path d="M400,60 C305,58 222,105 218,195 C215,280 275,352 350,372 C370,378 388,380 400,380 Z"/>'],
+  ['Retina (photoreceptors)', 'PR', '<path d="M58,70 C8,140 8,300 58,375 L74,366 C30,300 30,145 74,80 Z"/>'],
+  ['Lamina', 'LAM', '<path d="M80,85 C40,150 40,295 80,360 L96,352 C60,292 60,155 96,95 Z"/>'],
+  ['Medulla', 'MEDe MEDi', '<path d="M104,100 C66,160 66,290 104,345 C138,330 152,290 152,222 C152,160 138,115 104,100 Z"/>'],
+  ['Lobula plate (T4 and T5 motion)', 'T45', '<ellipse cx="172" cy="200" rx="15" ry="50"/>'],
+  ['Lobula', 'LOB', '<ellipse cx="197" cy="255" rx="14" ry="42"/>'],
+  ['Optic glomeruli (LC, LPLC2, LC4)', 'LCobj LPLC2 LC4 VPN VCN', '<ellipse cx="243" cy="222" rx="14" ry="32"/>'],
+  ['Anterior optic tubercle', 'AOTU', '<ellipse cx="282" cy="104" rx="16" ry="9"/>'],
+  ['Lateral horn', 'LHe LHi', '<ellipse cx="262" cy="160" rx="24" ry="20"/>'],
+  ['Mushroom body calyx (Kenyon cells)', 'KC', '<circle cx="318" cy="105" r="24"/>'],
+  ['Mushroom body lobes (MBONs, APL)', 'MBONav MBONap APL', '<path d="M348,85 a7,7 0 0 1 14,0 V176 H392 a7,7 0 0 1 0,14 H355 a7,7 0 0 1 -7,-7 Z"/>'],
+  ['Dopamine: PPL1 (punishment)', 'PPL1', '<circle cx="300" cy="142" r="6"/>'],
+  ['Dopamine: PAM (reward)', 'PAM', '<circle cx="380" cy="208" r="7"/>'],
+  ['pC1, pC2 and vpoEN (receptivity)', 'pC1 pC2 vpoEN', '<circle cx="377" cy="122" r="8"/>'],
+  ['Defensive arousal neurons', 'AROUS', '<circle cx="330" cy="160" r="7"/>'],
+  ['Antennal lobe', 'ORN ORNp PN PNp ALLN', '<circle cx="352" cy="262" r="24"/>'],
+  ['AMMC (hearing, song)', 'JO AMMC', '<ellipse cx="298" cy="282" rx="20" ry="13"/>'],
+  ['SEZ (taste, feeding)', 'GRN SEZt FDG SEZi', '<path d="M318,305 C325,345 360,370 400,370 L400,322 C384,322 372,306 360,298 Z"/>'],
+  ['Proboscis motor neurons', 'PERMN MN', '<circle cx="356" cy="342" r="5"/>'],
+  ['Giant Fiber', 'GF', '<circle cx="380" cy="240" r="5"/>'],
+  ['Descending neurons (neck)', 'DNapp DNfrz vpoDN DNo', '<rect x="387" y="384" width="12" height="52" rx="3"/>'],
+  ['Ascending neurons (neck)', 'ANs ANo', '<rect x="373" y="384" width="12" height="52" rx="3"/>']
+];
+const MID = [['Central complex', 'CXe CXi', '<path d="M358,150 Q400,124 442,150 Q400,174 358,150 Z"/><circle cx="400" cy="185" r="11"/>']];
+const LABELS = [ // text, x, y, anchor, line-to x, y
+  ['Retina', 10, 40, 'start', 50, 80], ['Lamina', 94, 40, 'middle', 86, 92], ['Medulla', 140, 58, 'middle', 120, 108],
+  ['Lobula plate', 120, 420, 'middle', 168, 249], ['Lobula', 196, 440, 'middle', 197, 297],
+  ['Optic glomeruli', 236, 404, 'middle', 243, 254], ['AMMC', 292, 424, 'middle', 298, 295], ['Antennal lobe', 366, 446, 'end', 352, 286],
+  ['AOTU', 262, 40, 'middle', 280, 95], ['Mushroom body', 318, 22, 'middle', 318, 81], ['pC1', 380, 46, 'middle', 377, 114],
+  ['Central complex', 452, 22, 'middle', 430, 140], ['Lateral horn', 610, 70, 'middle', 552, 144], ['PPL1', 510, 62, 'middle', 500, 136],
+  ['Arousal', 520, 96, 'start', 476, 156], ['PAM', 470, 236, 'middle', 426, 210],
+  ['SEZ', 470, 404, 'start', 440, 350], ['Neck connective', 432, 424, 'start', 412, 410], ['Giant Fiber', 432, 446, 'start', 420, 244]
+];
+let mapSvg = '<g class="o"><path d="M380,245 L392,384"/><path d="M420,245 L408,384"/><path d="M335,120 L352,170"/><path d="M465,120 L448,170"/></g>';
+const mapEls = []; // [element, side, pops, name]
+for (const side of ['L', 'R']) {
+  mapSvg += `<g${side === 'R' ? ' transform="translate(800,0) scale(-1,1)"' : ''}>`;
+  SHAPES.forEach(([name, pops], j) => { mapSvg += `<g class="r" id="m${side}${j}">${SHAPES[j][2]}<title>${name}</title></g>`; });
+  mapSvg += '</g>';
+}
+MID.forEach(([name, pops, el], j) => { mapSvg += `<g class="r" id="mM${j}">${el}<title>${name}</title></g>`; });
+mapSvg += '<circle class="h" cx="400" cy="300" r="13"><title>Oesophagus</title></circle>';
+mapSvg += LABELS.map(([t, x, y, a, lx, ly]) => `<line x1="${x}" y1="${y + (y < 225 ? 4 : -12)}" x2="${lx}" y2="${ly}"/><text x="${x}" y="${y}" text-anchor="${a}">${t}</text>`).join('');
+$('map').innerHTML = mapSvg;
+for (const side of ['L', 'R']) SHAPES.forEach(([name, pops], j) => mapEls.push([$('m' + side + j), [side], pops.split(' '), name]));
+MID.forEach(([name, pops], j) => mapEls.push([$('mM' + j), ['L', 'R'], pops.split(' '), name]));
+let popIndex = null;
+function drawMap(rates) {
+  for (const m of mapEls) {
+    if (!m.idx) m.idx = m[1].flatMap(s => m[2].map(p => popIndex[p + '_' + s]));
+    let sp = 0, n = 0;
+    for (const k of m.idx) { sp += rates[k] * info.pops[k].n; n += info.pops[k].n; }
+    const hz = sp / n;
+    // lighting: dark green at rest, bright yellow green with a glow when firing hard
+    const t = Math.pow(Math.max(0, Math.min(1, (hz - 5) / 25)), 0.8);
+    m[0].style.fill = `hsl(${140 - 60 * t} ${45 + 50 * t}% ${12 + 58 * t}%)`;
+    m[0].style.stroke = t > 0.35 ? `hsl(${140 - 60 * t} 100% ${55 + 30 * t}%)` : '';
+    m[0].style.filter = t > 0.25 ? `drop-shadow(0 0 ${(2 + 10 * t).toFixed(1)}px hsl(${140 - 60 * t} 100% 60%))` : '';
+    m[0].lastChild.textContent = `${m[3]}${m[1].length === 1 ? (m[1][0] === 'L' ? ', left' : ', right') : ''}: ${hz.toFixed(1)} Hz, ${fmt(n)} neurons`;
+  }
+}
+
+const worker = new Worker(URL.createObjectURL(new Blob([$('brain-src').textContent], { type: 'text/javascript' })));
+function send() { worker.postMessage({ type: 'stim', values: stim }); }
+document.addEventListener('visibilitychange', () => worker.postMessage({ type: document.hidden ? 'pause' : 'resume' }));
+
+let info = null, current = 'idle';
+const fmt = n => n.toLocaleString('en-US');
+worker.onmessage = e => {
+  const m = e.data;
+  if (m.type === 'ready') {
+    info = m.info;
+    popIndex = {}; info.pops.forEach((p, k) => popIndex[p.id] = k);
+    $('regions').innerHTML = info.regions.map((r, j) => `<tr><td>${r.name}</td><td class="n">${fmt(r.n)}</td><td class="n" id="rh-${j}">0</td><td><meter id="rm-${j}" min="0" max="40" value="0"></meter></td></tr>`).join('');
+    send();
+    return;
+  }
+  const r = m.r;
+  $('status').textContent = `Running: ${fmt(info.neurons)} neurons, ${fmt(info.connections)} connections (${fmt(info.plastic)} plastic), about ${info.memMB} MB, ${fmt(Math.round(r.spikesPerSec / 1000))} thousand spikes per second, ${Math.round(r.speed * 100)}% of real time, ${(r.t / 1000).toFixed(1)} seconds simulated`;
+  drawMap(r.popRates);
+  r.regionRates.forEach((v, j) => { $('rh-' + j).textContent = v.toFixed(1); $('rm-' + j).value = v; });
+  let best = 'idle', bestS = 0;
+  for (const k in BEH) {
+    const hz = r.out[k];
+    $('bh-' + k).textContent = hz.toFixed(1);
+    $('bm-' + k).value = Math.min(1, hz / BEH[k][2]);
+    const s = hz / BEH[k][2];
+    if (hz >= THRESH[k] && s > bestS) { best = k; bestS = s; }
+  }
+  const cur = current === 'idle' ? 0 : r.out[current] / BEH[current][2];
+  if (best !== current && (best === 'idle' || current === 'idle' || r.out[current] < THRESH[current] || bestS > cur * 1.1)) {
+    current = best;
+    $('winner').textContent = best === 'idle' ? 'Idle' : BEH[best][0];
+    $('caption').textContent = best === 'idle' ? 'Nothing has crossed threshold.' : BEH[best][3];
+  }
+  const st = { tk: r.tk, da: r.da, pun: r.pun, av: r.mb.av, ap: r.mb.ap };
+  for (const k in st) {
+    $('sm-' + k).value = st[k];
+    $('st-' + k).textContent = k === 'av' || k === 'ap' ? Math.round(st[k] * 100) + '%' : k === 'tk' ? st[k].toFixed(2) : st[k].toFixed(1) + ' Hz';
+  }
+};
+</script>
+</body>
+</html>
